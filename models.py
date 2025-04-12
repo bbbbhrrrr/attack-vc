@@ -10,6 +10,16 @@ from torch.nn.utils import spectral_norm
 def pad_layer(
     inp: Tensor, layer: nn.Module, pad_type: Optional[str] = "reflect"
 ) -> Tensor:
+    """对输入进行填充并应用指定层
+    
+    Args:
+        inp: 输入张量
+        layer: 卷积层
+        pad_type: 填充类型，默认为"reflect"
+        
+    Returns:
+        填充并应用层后的输出
+    """
     kernel_size = layer.kernel_size[0]
     if kernel_size % 2 == 0:
         pad = (kernel_size // 2, kernel_size // 2 - 1)
@@ -21,6 +31,15 @@ def pad_layer(
 
 
 def pixel_shuffle_1d(inp: Tensor, scale_factor: Optional[float] = 2.0) -> Tensor:
+    """一维像素重排（用于上采样）
+    
+    Args:
+        inp: 输入张量
+        scale_factor: 缩放因子，默认为2.0
+        
+    Returns:
+        重排后的张量
+    """
     batch_size, channels, in_width = inp.size()
     channels //= scale_factor
     out_width = in_width * scale_factor
@@ -31,11 +50,29 @@ def pixel_shuffle_1d(inp: Tensor, scale_factor: Optional[float] = 2.0) -> Tensor
 
 
 def upsample(x: Tensor, scale_factor: Optional[float] = 2.0) -> Tensor:
+    """使用最近邻插值进行上采样
+    
+    Args:
+        x: 输入张量
+        scale_factor: 缩放因子，默认为2.0
+        
+    Returns:
+        上采样后的张量
+    """
     x_up = F.interpolate(x, scale_factor=scale_factor, mode="nearest")
     return x_up
 
 
 def append_cond(x: Tensor, cond: Tensor) -> Tensor:
+    """应用条件信息（均值和标准差）到输入
+    
+    Args:
+        x: 输入张量
+        cond: 条件张量（前半部分为均值，后半部分为标准差）
+        
+    Returns:
+        应用条件后的张量
+    """
     p = cond.size(1) // 2
     mean, std = cond[:, :p], cond[:, p:]
     out = x * std.unsqueeze(dim=2) + mean.unsqueeze(dim=2)
@@ -48,6 +85,17 @@ def conv_bank(
     act: nn.Module,
     pad_type: Optional[str] = "reflect",
 ) -> Tensor:
+    """应用卷积组（多种尺寸的卷积核）
+    
+    Args:
+        x: 输入张量
+        module_list: 卷积层列表
+        act: 激活函数
+        pad_type: 填充类型，默认为"reflect"
+        
+    Returns:
+        卷积组输出结果（所有卷积结果拼接）
+    """
     outs = []
     for layer in module_list:
         out = act(pad_layer(x, layer, pad_type))
@@ -57,12 +105,24 @@ def conv_bank(
 
 
 def get_act(act: str) -> nn.Module:
+    """获取激活函数
+    
+    Args:
+        act: 激活函数类型
+        
+    Returns:
+        激活函数模块
+    """
     if act == "lrelu":
         return nn.LeakyReLU()
     return nn.ReLU()
 
 
 class ContentEncoder(nn.Module):
+    """内容编码器
+    
+    提取输入语音的内容信息，不包含说话人特征。
+    """
     def __init__(
         self,
         c_in: int,
@@ -77,6 +137,21 @@ class ContentEncoder(nn.Module):
         act: str,
         dropout_rate: float,
     ):
+        """初始化内容编码器
+        
+        Args:
+            c_in: 输入通道数
+            c_h: 隐藏层通道数
+            c_out: 输出通道数
+            kernel_size: 卷积核大小
+            bank_size: 卷积组最大核大小
+            bank_scale: 卷积组核大小增长步长
+            c_bank: 卷积组通道数
+            n_conv_blocks: 卷积块数量
+            subsample: 每个卷积块的下采样率
+            act: 激活函数类型
+            dropout_rate: Dropout比例
+        """
         super(ContentEncoder, self).__init__()
         self.n_conv_blocks = n_conv_blocks
         self.subsample = subsample
@@ -104,6 +179,15 @@ class ContentEncoder(nn.Module):
         self.dropout_layer = nn.Dropout(p=dropout_rate)
 
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """前向传播
+        
+        Args:
+            x: 输入特征
+            
+        Returns:
+            mu: 均值向量
+            log_sigma: 对数标准差向量
+        """
         out = conv_bank(x, self.conv_bank, act=self.act)
         out = pad_layer(out, self.in_conv_layer)
         out = self.norm_layer(out)
@@ -127,6 +211,10 @@ class ContentEncoder(nn.Module):
 
 
 class SpeakerEncoder(nn.Module):
+    """说话人编码器
+    
+    提取输入语音的说话人特征。
+    """
     def __init__(
         self,
         c_in: int,
@@ -142,6 +230,22 @@ class SpeakerEncoder(nn.Module):
         act: str,
         dropout_rate: float,
     ):
+        """初始化说话人编码器
+        
+        Args:
+            c_in: 输入通道数
+            c_h: 隐藏层通道数
+            c_out: 输出通道数
+            kernel_size: 卷积核大小
+            bank_size: 卷积组最大核大小
+            bank_scale: 卷积组核大小增长步长
+            c_bank: 卷积组通道数
+            n_conv_blocks: 卷积块数量
+            n_dense_blocks: 全连接块数量
+            subsample: 每个卷积块的下采样率
+            act: 激活函数类型
+            dropout_rate: Dropout比例
+        """
         super(SpeakerEncoder, self).__init__()
         self.c_in = c_in
         self.c_h = c_h
@@ -179,6 +283,14 @@ class SpeakerEncoder(nn.Module):
         self.dropout_layer = nn.Dropout(p=dropout_rate)
 
     def conv_blocks(self, inp: Tensor) -> Tensor:
+        """卷积块序列
+        
+        Args:
+            inp: 输入特征
+            
+        Returns:
+            处理后的特征
+        """
         out = inp
         for l in range(self.n_conv_blocks):
             y = pad_layer(out, self.first_conv_layers[l])
@@ -193,6 +305,14 @@ class SpeakerEncoder(nn.Module):
         return out
 
     def dense_blocks(self, inp: Tensor) -> Tensor:
+        """全连接块序列
+        
+        Args:
+            inp: 输入特征
+            
+        Returns:
+            处理后的特征
+        """
         out = inp
         for l in range(self.n_dense_blocks):
             y = self.first_dense_layers[l](out)
@@ -205,6 +325,14 @@ class SpeakerEncoder(nn.Module):
         return out
 
     def forward(self, x: Tensor) -> Tensor:
+        """前向传播
+        
+        Args:
+            x: 输入特征
+            
+        Returns:
+            说话人嵌入向量
+        """
         out = conv_bank(x, self.conv_bank, act=self.act)
         out = pad_layer(out, self.in_conv_layer)
         out = self.act(out)
@@ -216,6 +344,10 @@ class SpeakerEncoder(nn.Module):
 
 
 class Decoder(nn.Module):
+    """解码器
+    
+    根据内容特征和说话人嵌入生成目标语音特征。
+    """
     def __init__(
         self,
         c_in: int,
@@ -229,6 +361,20 @@ class Decoder(nn.Module):
         sn: bool,
         dropout_rate: float,
     ):
+        """初始化解码器
+        
+        Args:
+            c_in: 输入通道数
+            c_cond: 条件通道数
+            c_h: 隐藏层通道数
+            c_out: 输出通道数
+            kernel_size: 卷积核大小
+            n_conv_blocks: 卷积块数量
+            upsample: 每个卷积块的上采样率
+            act: 激活函数类型
+            sn: 是否使用谱归一化
+            dropout_rate: Dropout比例
+        """
         super(Decoder, self).__init__()
         self.n_conv_blocks = n_conv_blocks
         self.upsample = upsample
@@ -255,6 +401,15 @@ class Decoder(nn.Module):
         self.dropout_layer = nn.Dropout(p=dropout_rate)
 
     def forward(self, z: Tensor, cond: Tensor) -> Tensor:
+        """前向传播
+        
+        Args:
+            z: 内容特征
+            cond: 条件信息（说话人嵌入）
+            
+        Returns:
+            生成的语音特征
+        """
         out = pad_layer(z, self.in_conv_layer)
         out = self.norm_layer(out)
         out = self.act(out)
@@ -281,13 +436,33 @@ class Decoder(nn.Module):
 
 
 class AdaInVC(nn.Module):
+    """AdaIN-VC 声音转换模型
+    
+    使用自适应实例归一化进行声音转换的模型。
+    """
     def __init__(self, config: Dict):
+        """初始化模型
+        
+        Args:
+            config: 模型配置字典
+        """
         super(AdaInVC, self).__init__()
         self.content_encoder = ContentEncoder(**config["ContentEncoder"])
         self.speaker_encoder = SpeakerEncoder(**config["SpeakerEncoder"])
         self.decoder = Decoder(**config["Decoder"])
 
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """前向传播（训练模式）
+        
+        Args:
+            x: 输入特征
+            
+        Returns:
+            mu: 内容均值
+            log_sigma: 内容对数标准差
+            emb: 说话人嵌入
+            dec: 解码结果
+        """
         mu, log_sigma = self.content_encoder(x)
         emb = self.speaker_encoder(x)
         eps = log_sigma.new(*log_sigma.size()).normal_(0, 1)
@@ -295,6 +470,15 @@ class AdaInVC(nn.Module):
         return mu, log_sigma, emb, dec
 
     def inference(self, src: Tensor, tgt: Tensor) -> Tensor:
+        """推理（声音转换）
+        
+        Args:
+            src: 源语音特征（提供语言内容）
+            tgt: 目标语音特征（提供声音特征）
+            
+        Returns:
+            转换后的语音特征
+        """
         mu, _ = self.content_encoder(src)
         emb = self.speaker_encoder(tgt)
         dec = self.decoder(mu, emb)
